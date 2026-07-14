@@ -1184,7 +1184,7 @@ Assemble a small, public-source guidelines corpus (all from open clinical refere
 Each guideline is written as a self-contained section with a clear heading so it chunks cleanly (see Step 6.4). `data/corpus/SOURCES.md` lists every source URL/citation.
 
 **Definition of Done:**
-- ETL runs without error; JSONL has ~72,000 entries; spot-check 5 codes for correct hierarchy paths, metadata tags, and synonyms (e.g., "heart attack" appears in I21.x synonyms).
+- ETL runs without error; JSONL has ~47,000 entries (46,881 `<diag>` elements in the 2026 data — the "~72,000" often quoted for ICD-10-CM counts billable code permutations, not XML entries); spot-check 5 codes for correct hierarchy paths, metadata tags, and synonyms (e.g., "Infarct, infarction, myocardium" appears in I21.9 synonyms — the Index routes colloquial "heart attack" through a code-less *see* cross-reference, which is why Step 3.2's LLM entity normalization exists).
 - `data/corpus/clinical_guidelines.md` committed with a `SOURCES.md` source list; corpus content collectively covers all 6 `requirements.md` §3 sample queries (especially the tension-headache code lookup).
 
 ---
