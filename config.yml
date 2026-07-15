@@ -45,6 +45,7 @@ paths:
   transcripts_path: data/transcripts/synthetic_transcripts.json
   ehr_store_path: data/ehr_store.json
   corpus_dir: data/corpus
+  guidelines_path: data/corpus/clinical_guidelines.md
 
 etl:
   max_index_synonyms: 10            # cap on Index phrases merged per code before embedding
