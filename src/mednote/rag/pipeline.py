@@ -64,8 +64,13 @@ class RAGPipeline:
         assessment_text: str,
         patient_sex: str = "unknown",
         patient_age: int | None = None,
+        entities: list[str] | None = None,
     ) -> list[SuggestedCode]:
         """Suggest ICD-10 codes for a SOAP assessment; [] means zero-hit.
+
+        ``entities``: pass pre-extracted entities (e.g. from the graph's
+        entity_extraction node) to skip internal extraction — avoids a second
+        LLM call when extraction already happened upstream.
 
         Raises:
             ValueError: if the assessment text is blank.
@@ -73,7 +78,8 @@ class RAGPipeline:
         if not assessment_text or not assessment_text.strip():
             raise ValueError("Assessment text is empty")
 
-        entities = self._extract_entities(assessment_text)
+        if entities is None:
+            entities = self._extract_entities(assessment_text)
         top = self._retrieve_and_rerank(entities, patient_sex, patient_age)
         if not top or top[0]["confidence"] < self.confidence_threshold:
             return []  # zero-hit: caller surfaces ZERO_HIT_MESSAGE
@@ -106,6 +112,7 @@ class RAGPipeline:
         Per-entity scoring keeps the vocabulary gap closed on both sides.
         """
         by_code: dict[str, dict] = {}
+        entity_best: list[str] = []  # each entity's top code — guaranteed a slot
         for entity in entities:
             cache_key = f"{entity}|sex={patient_sex}|age={patient_age}"
             candidates = self.cache.get(cache_key)
@@ -114,7 +121,13 @@ class RAGPipeline:
                     entity, patient_sex=patient_sex, patient_age=patient_age
                 )
                 self.cache.set(cache_key, candidates)
-            for scored in self.reranker.rerank(entity, candidates, self.top_k_rerank):
+            reranked = self.reranker.rerank(entity, candidates, self.top_k_rerank)
+            # Guarantee a slot only for credible codes: a sub-threshold best
+            # (e.g. "Prehypertension" -> O10.03 at 0.39, measured live) is
+            # noise the physician shouldn't see, not a condition to protect.
+            if reranked and reranked[0]["confidence"] >= self.confidence_threshold:
+                entity_best.append(reranked[0]["code"])
+            for scored in reranked:
                 code = scored["code"]
                 # Keep the best confidence when entities overlap on a code.
                 if (
@@ -123,5 +136,14 @@ class RAGPipeline:
                 ):
                     by_code[code] = scored
 
+        # Global cap with per-entity fairness: one entity's high-scoring
+        # candidates must not crowd another condition out entirely (measured
+        # live: three extracted conditions -> a top-3 of only insomnia codes,
+        # dropping the chief complaint). Each entity's best code is reserved
+        # a slot; remaining slots fill by confidence.
         merged = sorted(by_code.values(), key=lambda c: c["confidence"], reverse=True)
-        return merged[: self.top_k_rerank]
+        guaranteed = set(entity_best)
+        limit = max(self.top_k_rerank, len(guaranteed))
+        kept = [c for c in merged if c["code"] in guaranteed]
+        kept.extend(c for c in merged if c["code"] not in guaranteed)
+        return sorted(kept[:limit], key=lambda c: c["confidence"], reverse=True)

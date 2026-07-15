@@ -228,3 +228,70 @@ def test_pipeline_rejects_empty_assessment(indexed_client: QdrantClient) -> None
     pipeline, _ = _make_pipeline(indexed_client, [])
     with pytest.raises(ValueError):
         pipeline.run("")
+
+
+def test_pipeline_guarantees_each_entity_its_best_code(indexed_client: QdrantClient) -> None:
+    """Multi-entity crowding: one entity's high-scoring candidates must not
+    push another entity's best code out of the merged top-k entirely —
+    measured live on TX001, three extracted conditions produced a top-3 that
+    was ALL insomnia codes, dropping the chief complaint (headache).
+    Every extracted condition gets at least its best code represented."""
+    from types import SimpleNamespace
+
+    def canned_retriever(cands_by_query):
+        return SimpleNamespace(
+            retrieve=lambda q, patient_sex="unknown", patient_age=None: cands_by_query[q]
+        )
+
+    def canned_reranker(conf_by_code):
+        def rerank(query, candidates, top_n):
+            scored = [{**c, "confidence": conf_by_code[c["code"]]} for c in candidates]
+            scored.sort(key=lambda c: c["confidence"], reverse=True)
+            return scored[:top_n]
+
+        return SimpleNamespace(rerank=rerank)
+
+    # Entity A dominates with three 0.97+ codes; entity B's best is 0.90.
+    cands = {
+        "Insomnia": [{"code": f"F51.{i}", "text": "t", "children_codes": [], "score": 1.0,
+                      "description": "d", "hierarchy_path": "h"} for i in range(3)],
+        "Tension headache": [{"code": "G44.2", "text": "t", "children_codes": [], "score": 1.0,
+                              "description": "d", "hierarchy_path": "h"}],
+    }
+    confs = {"F51.0": 0.99, "F51.1": 0.98, "F51.2": 0.97, "G44.2": 0.90}
+
+    pipeline = RAGPipeline(
+        entity_extractor=FakeChatModel([]),  # bypassed via entities=
+        retriever=canned_retriever(cands),
+        reranker=canned_reranker(confs),
+        specificity_checker=SpecificityChecker(client=indexed_client, collection_name=COLLECTION),
+        cache=RAGCache(max_size=8),
+    )
+    suggested = pipeline.run(
+        "assessment", entities=["Insomnia", "Tension headache"]
+    )
+    codes = [s["code"] for s in suggested]
+    assert "G44.2" in codes, "entity B's best code must survive the merge"
+    assert codes[0] == "F51.0", "ordering stays confidence-descending"
+    assert len(codes) == 3
+
+    # But a SUB-threshold best gets no protected slot: with entity B's only
+    # code now scoring 0.30, the merge reverts to pure confidence order.
+    confs["G44.2"] = 0.30
+    pipeline.cache = RAGCache(max_size=8)  # fresh cache; confs changed
+    suggested = pipeline.run("assessment", entities=["Insomnia", "Tension headache"])
+    assert [s["code"] for s in suggested] == ["F51.0", "F51.1", "F51.2"]
+
+
+def test_pipeline_accepts_pre_extracted_entities(indexed_client: QdrantClient) -> None:
+    """The graph's entity_extraction node runs first; run(entities=...) must
+    skip internal extraction (no LLM call) and use the provided entities."""
+    pipeline, retriever = _make_pipeline(indexed_client, [])  # NO canned LLM replies
+    assessment = "acute myocardial infarction unspecified"
+
+    suggested = pipeline.run(
+        assessment, entities=["Acute myocardial infarction, unspecified"]
+    )
+
+    assert retriever.calls == 1
+    assert suggested[0]["code"] == "I21.9"
