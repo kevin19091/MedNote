@@ -17,8 +17,13 @@ dependencies = [
     "google-generativeai>=0.5.0",
     "qdrant-client>=1.9.0",
     "sentence-transformers>=5.0.0",
-    "transformers>=4.40.0",
-    "torch>=2.0.0",
+    # transformers>=5 hard-requires torch>=2.4 at runtime (it disables its torch backend
+    # below that and then crashes on its own code), but PyPI never shipped an Intel-Mac
+    # (macosx_x86_64) wheel for torch past 2.2.2 — so cap transformers on that platform too.
+    "transformers>=4.40.0,<5; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "transformers>=4.40.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torch>=2.0.0,<2.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torch>=2.0.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "fastembed>=0.3.0",
     "gradio>=5.0.0",
     "fastapi>=0.130.0",
@@ -39,6 +44,11 @@ notebook = [
     "ipykernel>=6.29",
     "ipywidgets>=8.1",
     "notebook>=7.0",
+]
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
 
 [build-system]
